@@ -311,14 +311,14 @@ class Trainer:
             state_dict.get(  # for backwards compatibility
                 "global_train_examples_seen",
                 state_dict.get("global_data_step", self.global_step) * self.cfg.global_train_batch_size,
-                ),
+            ),
         )
         self.global_train_tokens_seen = state_dict.get(
             "global_train_tokens_seen",
             state_dict.get("global_data_step", self.global_step)  # for backwards compatibility
             * self.cfg.global_train_batch_size
             * self.cfg.model.max_sequence_length,
-            )
+        )
 
         if not self.cfg.restore_dataloader:
             self.epoch = 0
@@ -1066,7 +1066,7 @@ class Trainer:
                         # We start monitoring speed after the first batch since the first
                         # batch might be an outlier due to compiling and other initialization overhead.
                         record=not first_batch,
-                        )
+                    )
 
                     should_log_this_step = self.should_log_this_step()
 
@@ -1095,17 +1095,23 @@ class Trainer:
                             and self.cfg.wandb is not None
                             and self.global_step % self.cfg.wandb.log_interval == 0
                     ):
-                        wandb.log(metrics, step=self.global_step)
+                        tries = 0
+                        while tries < 3:
+                            try:
+                                wandb.log(metrics, step=self.global_step)
+                                break
+                            except:
+                                tries += 1
 
-                    # Check if/when run should be canceled.
-                    if not cancel_initiated and self.global_step % self.cfg.canceled_check_interval == 0:
-                        cancel_initiated, extra_steps = self.check_if_cancelled()
-                        if cancel_initiated:
-                            stop_at = (
-                                self.global_step + extra_steps
-                                if stop_at is None
-                                else min(self.global_step + extra_steps, stop_at)
-                            )
+                    # # Check if/when run should be canceled.
+                    # if not cancel_initiated and self.global_step % self.cfg.canceled_check_interval == 0:
+                    #     cancel_initiated, extra_steps = self.check_if_cancelled()
+                    #     if cancel_initiated:
+                    #         stop_at = (
+                    #             self.global_step + extra_steps
+                    #             if stop_at is None
+                    #             else min(self.global_step + extra_steps, stop_at)
+                    #         )
 
                     # Maybe save sharded checkpoint.
                     if save_checkpoints and (
