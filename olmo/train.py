@@ -22,6 +22,7 @@ import torch.nn.functional as F
 import wandb
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.utils.data import DataLoader
+# from accelerate import Accelerator
 
 from .aliases import PathOrStr
 from .checkpoint import Checkpointer, FullCheckpointer, build_sharded_checkpointer
@@ -143,6 +144,8 @@ class Trainer:
     last_sharded_checkpoint_step: Optional[int] = None
     last_unsharded_checkpoint_step: Optional[int] = None
 
+    # accelerator: Accelerator = None
+
     def __post_init__(self):
         if self.cfg.fused_loss:
             from flash_attn.ops.triton.cross_entropy import (  # type: ignore
@@ -185,6 +188,9 @@ class Trainer:
                 return loss, z_loss
 
             self.loss_fn = fused_loss_fn
+
+        # # prepare for fp8
+        # self.fsdp_model, self.optim, self.train_loader = self.accelerator.prepare(self.fsdp_model, self.optim, self.train_loader)
 
     @property
     def dataset(self) -> IterableDataset:
@@ -652,6 +658,7 @@ class Trainer:
 
         ce_batch_loss = torch.tensor(0.0, device=self.device)
         aux_batch_loss = torch.tensor(0.0, device=self.device)
+
         z_batch_loss = None if not self.cfg.softmax_auxiliary_loss else torch.tensor(0.0, device=self.device)
         for micro_batch in micro_batches:
             with torch.autocast("cuda", enabled=True, dtype=self.cfg.autocast_precision):
@@ -661,7 +668,7 @@ class Trainer:
                 )
                 ce_loss = ce_loss / len(micro_batches)
 
-                if aux_loss is not None:
+                if self.cfg.model.use_mod:
                     aux_loss = aux_loss / len(micro_batches)
                     aux_batch_loss += aux_loss.detach()
 
@@ -687,6 +694,7 @@ class Trainer:
 
             # Run backward pass.
             loss.backward()
+            # self.accelerator.backward(loss)
 
         return ce_batch_loss, z_batch_loss, aux_batch_loss
 
@@ -701,7 +709,7 @@ class Trainer:
         # Zero-gradients.
         self.optim.zero_grad(set_to_none=True)
 
-        # Move tensors to the right device.
+        # # Move tensors to the right device.
         batch = move_to_device(batch, self.device)
 
         # Run forward-backward pass.
@@ -773,7 +781,7 @@ class Trainer:
         return ce_loss.mean(dim=-1), logits
 
     def eval_step(self, batch: Dict[str, Any], evaluator: Evaluator) -> None:
-        # Move tensors to the right device.
+        # # Move tensors to the right device.
         batch = move_to_device(batch, self.device)
 
         # Run forward pass.
@@ -870,6 +878,9 @@ class Trainer:
         # Zero gradients and set model to 'eval' mode.
         self.optim.zero_grad(set_to_none=True)
         self.fsdp_model.eval()
+
+        if self.cfg.optimizer.name == 'adamw_schedule_free':
+            self.optim.eval()
 
         eval_metrics = {}
         for evaluator in self.evaluators:
@@ -979,6 +990,10 @@ class Trainer:
 
         # Set model to 'train' mode.
         self.fsdp_model.train()
+
+        if self.cfg.optimizer.name == "adamw_schedule_free":
+            self.optim.train()
+        # set optimizer to train (if it's schedule free)
 
         # Initialize monitors.
         assert self.cfg.device_train_batch_size is not None
@@ -1173,6 +1188,8 @@ class Trainer:
 
                         # Reset model to 'train' mode.
                         self.fsdp_model.train()
+                        if self.cfg.optimizer.name == 'adamw_schedule_free':
+                            self.optim.train()
 
                     # End of batch.
                     first_batch = False

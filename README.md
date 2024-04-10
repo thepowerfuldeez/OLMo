@@ -6,9 +6,14 @@ You need PyTorch 2.1.2 to work nicely with MS-AMP
 
 ```bash
 git clone https://github.com/thepowerfuldeez/OLMo.git
+
+sudo docker run -it -d --name=nvidia_torch_train --privileged --net=host --ipc=host --gpus=all -v /:/hostroot -v /mnt/harddrive/:/mnt/harddrive/ nvcr.io/nvidia/pytorch:24.03-py3 bash
+sudo docker exec -it nvidia_torch_train bash
+
 cd OLMo
+pip install torch torchvision torchaudio -U
+MAX_JOBS=4 pip install flash-attn --no-build-isolation -U
 pip install -e .[all]
-pip install flash-attn==2.3.3 --no-build-isolation
 ```
 
 ## Usage
@@ -20,6 +25,17 @@ torchrun --nproc_per_node=2 scripts/train.py configs/official/OLMo-300M-mod.yaml
 ```bash
 
 ## Research log
+
+
+2024-04-10
+----------
+A couple of updates:
+1. Trained 2 iterations of Mixture-of-Depths. Tested sigmoid on router logits, tested more n_layers. Noticed that grouped query attention with kv_heads=2 degrades quality but improves speed by 5%. 10B tokens are ready.
+In general, MoD allows higher batch and speed of training increases, but for the cost of quality degradation. I got 1% short of baseline. You must match IsoFLOPs for training (meaning you should increase model complexity and/or batch to compensate for reduced seq_len - only then quality would match)
+2. Tried to run code with accelerate in fp8, no memory/speed improvement, will investigate more later.
+3. Trying out schedule-free optimizer and using constant lr schedule. This should improve convergence
+
+Running now n_layers=8 LLM with batch=10, n_kv_heads=4 and MoD sparsity 50% as a trade-off. Getting 28000 tps.
 
 2024-04-05
 ----------
@@ -56,7 +72,8 @@ I have tried to use bitsandbytes adamw optimizer and got 11% tps improvement: 32
 
 Tried to add flash-attn RoPE support using triton kernel. During the development discovered several things:
 1. flash-attn==2.5.6 doesn't work with torch==2.3.0a0+40ec155e58.nv24.3 nightly. It throws an error that q,k,v are not fp16 or bf16 however they are.
-2. RoPE triton kernel is not compatible with torch.compile. I got along with it by using torch.compiler.disable decorator.
+2. I have reinstalled torch 2.2 stable and re-reinstalled flash-attn=latest.
+3. RoPE triton kernel is not compatible with torch.compile. I got along with it by using torch.compiler.disable decorator.
 
 Re-compiling flash-attn and addition of rope kernel results in 24300 tps, which is another 5% improvement.
 

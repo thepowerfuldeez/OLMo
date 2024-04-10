@@ -14,12 +14,13 @@ from torch.optim.optimizer import Optimizer as OptimizerBase
 from . import LayerNormBase
 from .config import OptimizerType, SchedulerConfig, SchedulerType, TrainConfig
 from .torch_util import get_default_device, is_distributed
+import schedulefree
 
 __all__ = [
     "Optimizer",
     "LionW",
     "AdamW",
-    "GaLoreAdamW",
+    "AdamWScheduleFree",
     "Scheduler",
     "CosWithWarmup",
     "LinearWithWarmup",
@@ -372,15 +373,15 @@ class LionW(Optimizer):
 
         if is_distributed() and isinstance(module, FullyShardedDataParallel):
             # Reduce total dot prod and norms across all ranks.
-            update_total_norm = update_total_norm**2.0
-            signed_update_total_norm = signed_update_total_norm**2.0
+            update_total_norm = update_total_norm ** 2.0
+            signed_update_total_norm = signed_update_total_norm ** 2.0
             # Reduce all together to avoid multiple communication calls.
             all_together = torch.stack([update_total_dot_prod, update_total_norm, signed_update_total_norm])
             # Only need the final result on rank0, since that's where we log from.
             dist.reduce(all_together, 0)
             update_total_dot_prod, update_total_norm, signed_update_total_norm = all_together
-            update_total_norm = update_total_norm**0.5
-            signed_update_total_norm = signed_update_total_norm**0.5
+            update_total_norm = update_total_norm ** 0.5
+            signed_update_total_norm = signed_update_total_norm ** 0.5
 
         update_cos_sim = update_total_dot_prod / torch.max(
             update_total_norm * signed_update_total_norm, torch.tensor(1e-8, device=get_default_device())
@@ -450,11 +451,15 @@ class AdamW(torch.optim.AdamW, Optimizer):
         return {key: self.state[param].get(key) for key in ("exp_avg", "exp_avg_sq")}  # type: ignore
 
 
-class GaLoreAdamW(galore_torch.GaLoreAdamW, Optimizer):
-    def get_state_for_param(self, param: nn.Parameter) -> Dict[str, Optional[torch.Tensor]]:
-        return {key: self.state[param].get(key) for key in ("exp_avg", "exp_avg_sq")}  # type: ignore
+# class GaLoreAdamW(galore_torch.GaLoreAdamW, Optimizer):
+#     def get_state_for_param(self, param: nn.Parameter) -> Dict[str, Optional[torch.Tensor]]:
+#         return {key: self.state[param].get(key) for key in ("exp_avg", "exp_avg_sq")}  # type: ignore
 
-class AdamW8bit(bnb.optim.AdamW8bit, Optimizer):
+# class AdamW8bit(bnb.optim.AdamW8bit, Optimizer):
+#     def get_state_for_param(self, param: nn.Parameter) -> Dict[str, Optional[torch.Tensor]]:
+#         return {key: self.state[param].get(key) for key in ("exp_avg", "exp_avg_sq")}  # type: ignore
+
+class AdamWScheduleFree(schedulefree.AdamWScheduleFree, Optimizer):
     def get_state_for_param(self, param: nn.Parameter) -> Dict[str, Optional[torch.Tensor]]:
         return {key: self.state[param].get(key) for key in ("exp_avg", "exp_avg_sq")}  # type: ignore
 
@@ -645,7 +650,8 @@ def get_param_groups(cfg: TrainConfig, model: nn.Module) -> List[Dict[str, Any]]
                     decay.add(fpn)
                 else:
                     no_decay.add(fpn)
-            elif (pn.endswith("weight") and isinstance(m, nn.Linear)) or "ff_out.output_linear" in pn or "ff_out.input_linear" in pn:
+            elif (pn.endswith("weight") and isinstance(m,
+                                                       nn.Linear)) or "ff_out.output_linear" in pn or "ff_out.input_linear" in pn:
                 decay.add(fpn)
             elif pn.endswith("weight") and isinstance(m, (LayerNormBase, nn.LayerNorm)):
                 if cfg.optimizer.decay_norm_and_bias:
@@ -754,6 +760,16 @@ def build_optimizer(cfg: TrainConfig, model: nn.Module) -> Optimizer:
 
         optimizer = AdamW8bit(param_groups, lr=cfg.optimizer.learning_rate,
                               betas=cfg.optimizer.betas, weight_decay=cfg.optimizer.weight_decay, eps=1e-5)
+        return optimizer
+    elif cfg.optimizer.name == OptimizerType.adamw_schedule_free:
+        print("building adamw schedule free optimizer")
+        # make parameters with "rank" to a single group, if param_name has "mlp" or "attn"
+
+        optimizer = AdamWScheduleFree(
+            param_groups, lr=cfg.optimizer.learning_rate,
+            betas=cfg.optimizer.betas, weight_decay=cfg.optimizer.weight_decay, eps=1e-5,
+            warmup_steps=2000,
+        )
         return optimizer
     else:
         raise NotImplementedError

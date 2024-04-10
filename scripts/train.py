@@ -190,6 +190,9 @@ def main(cfg: TrainConfig) -> None:
         indices_file_path.parent.mkdir(exist_ok=True, parents=True)
         indices_file = gzip.open(indices_file_path, "wt")
 
+    # accelerator = Accelerator()
+    # accelerator.state.distributed_type = "FSDP"
+
     # Consolidate components into `Trainer` object.
     with Trainer(
             cfg=cfg,
@@ -202,6 +205,7 @@ def main(cfg: TrainConfig) -> None:
             device=device,
             evaluators=evaluators,
             indices_file=indices_file,
+            # accelerator=accelerator
     ) as trainer:
         if not cfg.dry_run and not cfg.no_pre_train_checkpoint and cfg.load_path is None:
             checkpoint_type = (

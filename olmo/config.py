@@ -467,6 +467,7 @@ class OptimizerType(StrEnum):
     lionw = "lionw"
     adamw = "adamw"
     galore = "galore"
+    adamw_schedule_free = "adamw_schedule_free"
 
 
 @dataclass

@@ -23,6 +23,7 @@ dependencies = [
     "packaging",
     "cached_path>=1.6.2",
     "transformers",
+    "schedulefree"
 ]
 
 [project.optional-dependencies]
