@@ -27,6 +27,11 @@ torchrun --nproc_per_node=2 scripts/train.py configs/official/OLMo-300M-mod.yaml
 ## Research log
 
 
+2024-04-11
+----------
+Schedule free optimizer seems to be working, twitter says you can use even higher lr. Quality plot is much more stable.
+Running 1B model now, shows 1800 tps, so it's 15x slower than 350M model. Only batch=1 fits to 1 GPU.
+
 2024-04-10
 ----------
 A couple of updates:
