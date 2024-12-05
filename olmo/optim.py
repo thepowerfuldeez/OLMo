@@ -14,11 +14,13 @@ from torch.optim.optimizer import Optimizer as OptimizerBase
 from . import LayerNormBase
 from .config import OptimizerType, SchedulerConfig, SchedulerType, TrainConfig
 from .torch_util import get_default_device, is_distributed
+from .mars import MARS
 
 __all__ = [
     "Optimizer",
     "LionW",
     "AdamW",
+    "MARSOLMO",
     "Scheduler",
     "CosWithWarmup",
     "LinearWithWarmup",
@@ -645,6 +647,142 @@ class AdamW(torch.optim.AdamW, Optimizer):
             self._step_size_norms = None
             self._step_size_maxs = None
             return metrics
+        
+
+class MARSOLMO(MARS, Optimizer):
+    def __init__(
+        self,
+        params,
+        lr=3e-3,
+        betas=(0.95, 0.99),
+        eps=1e-8,
+        weight_decay=0.0,
+        amsgrad=False,
+        gamma=0.025,
+        is_approx=True,
+        mars_type="mars-adamw",
+        optimize_1d=False,
+        lr_1d=3e-3,
+        betas_1d=(0.9, 0.95),
+        weight_decay_1d=0.1,
+        record_update_metrics: bool = False,
+        selective_updates: bool = False,
+    ):
+        # Initialize MARS optimizer
+        super().__init__(
+            params,
+            lr=lr,
+            betas=betas,
+            eps=eps,
+            weight_decay=weight_decay,
+            amsgrad=amsgrad,
+            gamma=gamma,
+            is_approx=is_approx,
+            mars_type=mars_type,
+            optimize_1d=optimize_1d,
+            lr_1d=lr_1d,
+            betas_1d=betas_1d,
+            weight_decay_1d=weight_decay_1d,
+        )
+        
+        # Initialize OLMo optimizer tracking
+        self._record_update_metrics = record_update_metrics
+        self._collecting_metrics = False
+        self._selective_updates = selective_updates
+        
+        # State for tracking metrics
+        self._step_size_param_names: Optional[List[str]] = None
+        self._step_size_norms: Optional[List[torch.Tensor]] = None
+        self._step_size_maxs: Optional[List[torch.Tensor]] = None
+
+    def _clean_param_name(self, name: str) -> str:
+        return name.replace("_fsdp_wrapped_module.", "")
+
+    # def get_state_for_param(self, param: nn.Parameter) -> Dict[str, Optional[torch.Tensor]]:
+    #     """Return optimizer state for parameter logging"""
+    #     state = self.state[param]
+    #     return {
+    #         "exp_avg": state.get("exp_avg"),
+    #         "exp_avg_sq": state.get("exp_avg_sq"),
+    #         "last_grad": state.get("last_grad")
+    #     }
+
+    # def get_post_step_metrics(
+    #     self, module: nn.Module, process_group: Optional[dist.ProcessGroup] = None
+    # ) -> Dict[str, torch.Tensor]:
+    #     """Return metrics after optimization step"""
+    #     if not (self._record_update_metrics and self._collecting_metrics):
+    #         return {}
+            
+    #     device = get_default_device()
+    #     dst_rank = 0
+    #     if process_group is not None:
+    #         dst_rank = dist.get_global_rank(process_group, 0)
+            
+    #     param_names = self._step_size_param_names
+    #     step_size_norms = self._step_size_norms 
+    #     step_size_maxs = self._step_size_maxs
+        
+    #     if param_names is None or step_size_norms is None or step_size_maxs is None:
+    #         return {}
+
+    #     # Reduce metrics if needed
+    #     if is_distributed() and isinstance(module, FullyShardedDataParallel):
+    #         # Reduce norms
+    #         all_norms = torch.cat(step_size_norms).to(device) ** 2.0
+    #         dist.reduce(all_norms, dst_rank, op=dist.ReduceOp.SUM, group=process_group)
+    #         step_size_norms = (all_norms ** (0.5)).squeeze(0).split(1)
+
+    #         # Reduce maxs
+    #         all_maxs = torch.cat(step_size_maxs).to(device)
+    #         dist.reduce(all_maxs, dst_rank, op=dist.ReduceOp.MAX, group=process_group)
+    #         step_size_maxs = all_maxs.split(1)
+
+    #     metrics = {}
+    #     for param_name, step_size_norm, step_size_max in zip(param_names, step_size_norms, step_size_maxs):
+    #         metrics[f"step/{param_name}.norm"] = step_size_norm.squeeze(0)
+    #         metrics[f"step/{param_name}.max"] = step_size_max.squeeze(0)
+
+    #     # Clear tracking state
+    #     self._step_size_param_names = None
+    #     self._step_size_norms = None
+    #     self._step_size_maxs = None
+        
+    #     return metrics
+
+    # @torch.no_grad()
+    # def step(self, closure=None):
+    #     """Performs optimization step while tracking metrics"""
+    #     # Track update metrics if needed
+    #     if self._record_update_metrics and self._collecting_metrics:
+    #         self._step_size_param_names = []
+    #         self._step_size_norms = []
+    #         self._step_size_maxs = []
+            
+    #         # Store parameter values before update
+    #         prev_params = {}
+    #         for group in self.param_groups:
+    #             for name, p in zip(group["param_names"], group["params"]):
+    #                 if p.grad is not None:
+    #                     prev_params[name] = p.data.clone()
+
+    #     # Perform MARS optimization step
+    #     loss = super().step(closure)
+
+    #     # Calculate update metrics if tracking
+    #     if self._record_update_metrics and self._collecting_metrics:
+    #         for group in self.param_groups:
+    #             for name, p in zip(group["param_names"], group["params"]):
+    #                 if p.grad is not None:
+    #                     name = self._clean_param_name(name)
+    #                     self._step_size_param_names.append(name)
+    #                     update = p.data - prev_params[name]
+    #                     self._step_size_norms.append(
+    #                         torch.linalg.vector_norm(update, 2.0, dtype=torch.float32).unsqueeze(0)
+    #                     )
+    #                     self._step_size_maxs.append(update.abs().max().unsqueeze(0))
+
+    #     return loss
 
 
 @dataclass
@@ -948,6 +1086,16 @@ def build_optimizer(cfg: TrainConfig, model: nn.Module) -> Optimizer:
             lr=cfg.optimizer.learning_rate,
             betas=cfg.optimizer.betas,
             weight_decay=cfg.optimizer.weight_decay,
+            record_update_metrics=cfg.optimizer.record_update_metrics,
+            selective_updates=cfg.optimizer.selective_updates,
+        )
+    elif cfg.optimizer.name == OptimizerType.mars:
+        return MARSOLMO(
+            param_groups,
+            lr=cfg.optimizer.learning_rate,
+            betas=cfg.optimizer.betas,
+            weight_decay=cfg.optimizer.weight_decay,
+            eps=cfg.optimizer.eps,
             record_update_metrics=cfg.optimizer.record_update_metrics,
             selective_updates=cfg.optimizer.selective_updates,
         )

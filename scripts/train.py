@@ -13,8 +13,10 @@ import torch.multiprocessing as mp
 import wandb
 from packaging import version
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+from torch.distributed._composable.fsdp import fully_shard, MixedPrecisionPolicy
 from torch.distributed.fsdp import ShardingStrategy
 from torch.nn.parallel import DistributedDataParallel as DDP
+from transformers import AutoTokenizer
 
 from olmo.config import (
     CheckpointType,
@@ -25,7 +27,7 @@ from olmo.config import (
 from olmo.data import build_train_dataloader
 from olmo.eval import build_evaluators
 from olmo.exceptions import OLMoCliError, OLMoConfigurationError
-from olmo.model import OLMo
+from olmo.model import OLMo, OLMoBlock
 from olmo.optim import BoltOnWarmupScheduler, build_optimizer, build_scheduler
 from olmo.torch_util import (
     barrier,
@@ -124,8 +126,10 @@ def main(cfg: TrainConfig) -> None:
     # Construct data loader.
     train_loader = build_train_dataloader(cfg)
 
+    tokenizer = AutoTokenizer.from_pretrained(cfg.tokenizer.identifier)
+
     # Construct evaluators.
-    evaluators = build_evaluators(cfg, device)
+    evaluators = build_evaluators(cfg, tokenizer, device)
     barrier()
 
     # Initialize the model.
@@ -136,11 +140,19 @@ def main(cfg: TrainConfig) -> None:
     log.info(f"Peak GPU Memory (MB) before {cfg.distributed_strategy}: {int(peak_gpu_memory() or 0)}")
 
     # Compile one block at a time.
-    if cfg.compile is not None:
-        if cfg.model.block_group_size != 1:
-            raise OLMoConfigurationError("Compile is only supported with block_group_size 1.")
-        for block in olmo_model.transformer.blocks:
-            block.compile(**cfg.compile.asdict())
+    # if cfg.compile is not None:
+    #     if cfg.model.block_group_size != 1:
+    #         raise OLMoConfigurationError("Compile is only supported with block_group_size 1.")
+    #     for block in olmo_model.transformer.blocks:
+    #         block.compile(**cfg.compile.asdict())
+
+    # if cfg.model.precision == "fp8":
+    # from torchao.float8 import convert_to_float8_training
+    # convert_to_float8_training(
+    #     olmo_model,
+    #     module_filter_fn=lambda mod, fqn: fqn != "output",
+    # )
+    # log.info("Swapped to Float8Linear layers")
 
     olmo_model.set_activation_checkpointing(cfg.activation_checkpointing)
 
@@ -211,6 +223,20 @@ def main(cfg: TrainConfig) -> None:
             param_init_fn=param_init_fn,
             **hybrid_sharding_fsdp_kwargs,
         )
+    elif cfg.distributed_strategy == DistributedStrategy.fsdp2:
+        log.info("Wrapping model with FSDP2...")
+
+        dist_model = olmo_model
+
+        mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16)
+        fsdp_cfg = {"mp_policy": mp_policy}
+
+        for block in dist_model.transformer.blocks:
+            fully_shard(block, **fsdp_cfg)
+        fully_shard(dist_model, **fsdp_cfg)
+        dist_model.to_empty(device=get_default_device())
+        param_init_fn = True
+
     elif cfg.distributed_strategy is None:
         raise NotImplementedError("Single accelerator training not implemented yet!")
 
@@ -305,6 +331,8 @@ def main(cfg: TrainConfig) -> None:
                 checkpoint_type = (
                     CheckpointType.sharded if cfg.save_num_checkpoints_to_keep != 0 else CheckpointType.unsharded
                 )
+            elif cfg.distributed_strategy == DistributedStrategy.fsdp2:
+                checkpoint_type = CheckpointType.unsharded
             else:
                 raise NotImplementedError(f"Distributed strategy {cfg.distributed_strategy} not supported yet!")
 
@@ -336,7 +364,7 @@ def main(cfg: TrainConfig) -> None:
             log.info("Checkpoint successfully loaded")
 
             # If we have to, set a new scheduler:
-            if cfg.reset_optimizer_state and not cfg.reset_trainer_state:
+            if cfg.reset_scheduler_state and not cfg.reset_trainer_state:
                 trainer.scheduler = BoltOnWarmupScheduler.wrap(
                     trainer.scheduler,
                     trainer.global_step,
@@ -347,6 +375,17 @@ def main(cfg: TrainConfig) -> None:
             log.info("Saving unsharded checkpoint...")
             checkpoint_path, _ = trainer.save_checkpoint(checkpoint_type=CheckpointType.unsharded)
             log.info(f"Unsharded checkpoint saved to {checkpoint_path}")
+
+        if cfg.compile is not None:
+            # TODO (epwalsh): trying to compile the whole train step results in a compile-time error from within
+            # the optimizer. We should investigate this further at some point.
+            #  trainer.train_step = torch.compile(trainer.train_step, **cfg.compile.asdict())
+            trainer.train_batch = torch.compile(trainer.train_batch, **cfg.compile.asdict())  # type: ignore
+            # TODO (epwalsh): compiling the `eval_batch()` method is a little sketchy since the inputs will look
+            # different for different eval tasks. That might be okay, but it might not be.
+            # trainer.eval_batch = torch.compile(trainer.eval_batch, **cfg.compile.asdict())  # type: ignore
+            # Alternatively, could just do this:
+            #  trainer.fsdp_model = torch.compile(trainer.fsdp_model, **cfg.compile.asdict())
 
         if not cfg.dry_run:
             log.info("Starting training...")

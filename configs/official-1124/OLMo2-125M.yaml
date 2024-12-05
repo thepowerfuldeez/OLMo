@@ -12,7 +12,6 @@ model:
   n_heads: 8
   n_layers: 10
   mlp_ratio: 4
-  use_liger: false
   weight_tying: true
   alibi: false
   rope: true
@@ -84,12 +83,12 @@ save_num_checkpoints_to_keep: 9
 # sharded_checkpointer: olmo_core
 
 # Unsharded checkpoints (for final storage)
-save_interval_unsharded: 10000
+save_interval_unsharded: 100000
 save_num_unsharded_checkpoints_to_keep: -1
 
-# load_path: /mnt/harddrive/checkpoints/olmo-tiny/1116-OLMo-125M-first-run/latest/
+load_path: /mnt/harddrive/checkpoints/olmo-tiny/1205-OLMo2-125M-baseline/latest/
 # load_path: /mnt/harddrive/checkpoints/olmo-tiny/1116-OLMo-125M-first-run/step120000/
-load_path: null
+# load_path: null
 
 max_duration: 10e9T
 global_train_batch_size: 16
