@@ -64,7 +64,7 @@ optimizer:
   - 0.95
   metrics_log_interval: 10
 
-reset_scheduler_state: true
+reset_scheduler_state: false
 scheduler:
   name: cosine_with_warmup
   t_warmup: 5000

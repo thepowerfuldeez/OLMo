@@ -229,12 +229,12 @@ def load_fsdp_optim_state(fsdp_model: FSDP, optim: Optimizer, optim_state: Dict[
 
     log.info("Loading flattened optimizer state...")
 
-    # Put optim state on CPU since `Optimizer.load_state_dict()` will create a deepcopy of the whole state dict,
-    # which takes up unnecessary GPU memory.
-    for state in flattened_osd["state"].values():
-        for k in state.keys():
-            state[k] = state[k].cpu()
-    gc_cuda()
+    # # Put optim state on CPU since `Optimizer.load_state_dict()` will create a deepcopy of the whole state dict,
+    # # which takes up unnecessary GPU memory.
+    # for state in flattened_osd["state"].values():
+    #     for k in state.keys():
+    #         state[k] = state[k].cpu()
+    # gc_cuda()
 
     optim.load_state_dict(fix_optim_state_dict(optim, flattened_osd))
 
