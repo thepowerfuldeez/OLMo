@@ -25,6 +25,7 @@ from torch.distributed import _remote_device
 from torch.distributed._shard._utils import narrow_tensor_by_index
 from torch.distributed._shard.metadata import ShardMetadata
 from torch.distributed._shard.sharded_tensor import ShardedTensor
+from torch.distributed._composable.fsdp import FSDPModule
 from torch.distributed.checkpoint.filesystem import WriteResult, _StorageInfo
 from torch.distributed.checkpoint.metadata import Metadata, MetadataIndex
 from torch.distributed.checkpoint.optimizer import load_sharded_optimizer_state_dict
@@ -48,7 +49,7 @@ except ModuleNotFoundError:
 from olmo import util
 
 from .aliases import PathOrStr
-from .config import BaseConfig, ShardedCheckpointerType, TrainConfig
+from .config import BaseConfig, ShardedCheckpointerType, TrainConfig, DistributedStrategy
 from .exceptions import OLMoCheckpointError
 from .optim import Optimizer, fix_optim_state_dict
 from .safetensors_util import safetensors_file_to_state_dict
@@ -221,11 +222,7 @@ def load_fsdp_optim_state(fsdp_model: FSDP, optim: Optimizer, optim_state: Dict[
     #    'state': { id: { 'grad_norm_exp_avg': Tensor, 'step': Tensor, 'exp_avg': Tensor, 'exp_avg_sq': Tensor } },
     #    'param_groups': [{ 'param_names': [ fsdp_fqn, ... ], 'params': [ id, ... ], ... }],
     # }
-    # NOTE: Careful! The order of the these arguments has changed from 2.0 to 2.1... ¯\_(ツ)_/¯
-    if version.parse(torch.__version__) < version.parse("2.1.0"):
-        flattened_osd = FSDP.optim_state_dict_to_load(optim_state, fsdp_model, optim)  # type: ignore
-    else:
-        flattened_osd = FSDP.optim_state_dict_to_load(fsdp_model, optim, optim_state)  # type: ignore
+    flattened_osd = FSDP.optim_state_dict_to_load(fsdp_model, optim, optim_state)  # type: ignore
 
     del optim_state
     gc_cuda()
@@ -597,7 +594,7 @@ class Checkpointer(metaclass=ABCMeta):
         # replacing the temp directory with the final directory from rank 0 might not be immediately
         # realized in the file systems of the other ranks.
         # So we wait here across all ranks until that final checkpoint directory is visible.
-        wait_for(lambda: checkpoint_dir.exists(), "Waiting for checkpoint directory", timeout=10.0)
+        wait_for(lambda: checkpoint_dir.exists(), "Waiting for checkpoint directory", timeout=20.0)
 
         barrier()
 
@@ -625,6 +622,14 @@ class FullCheckpointer(Checkpointer):
         *,
         upload_to: Optional[str] = None,
     ) -> None:
+        """
+        Save checkpoint for model, optimizer and trainer state.
+        
+        Key differences for FSDP2:
+        - Uses DTensor-based parameters instead of FlatParameter
+        - Simpler state dict handling without communication
+        - No need for special prefetch or sync handling
+        """
         with self._temporary_wd(dir) as checkpoint_dir:
             if isinstance(dist_model, FSDP):
                 with FSDP.state_dict_type(
@@ -658,9 +663,27 @@ class FullCheckpointer(Checkpointer):
                 self._write_optim_dict(
                     optim_state_dict, checkpoint_dir, upload_to, save_overwrite=self.cfg.save_overwrite
                 )
+
+            elif isinstance(dist_model, FSDPModule):  # FSDP2                
+                # Save model state - DTensor handles sharding automatically
+                if get_global_rank() == 0:
+                    log.info("Saving model state...")
+                    model_state_dict = dist_model.state_dict()
+                    self._write_model_dict(
+                        model_state_dict, checkpoint_dir, upload_to, save_overwrite=self.cfg.save_overwrite
+                    )
+
+                    # Save optimizer state - already properly sharded
+                    if optim is not None:
+                        log.info("Saving optimizer state...")
+                        optim_state_dict = optim.state_dict()
+                        self._write_optim_dict(
+                            optim_state_dict, checkpoint_dir, upload_to, save_overwrite=self.cfg.save_overwrite
+                        )
+
             else:
                 log.info(
-                    "`FullCheckpointer.save_checkpoint` only supported for FSDP and DDP distributed strategies!"
+                    "`FullCheckpointer.save_checkpoint` only supported for FSDP1, FSDP2 and DDP distributed strategies!"
                 )
 
             # Save trainer state.
@@ -672,7 +695,6 @@ class FullCheckpointer(Checkpointer):
                     trainer_state,
                     upload_to=upload_to,
                     save_overwrite=self.cfg.save_overwrite,
-                    synchronize=False,
                 )
             # Save config.
             self._save_config(checkpoint_dir, upload_to=upload_to)
@@ -686,6 +708,14 @@ class FullCheckpointer(Checkpointer):
         local_cache: Optional[PathOrStr] = None,
         load_optimizer_state: bool = True,
     ) -> Dict[str, Any]:
+        """
+        Restores a checkpoint to the model and optimizer. Returns the remaining trainer state.
+        
+        Key differences for FSDP2:
+        - Uses DTensor-based parameters instead of FlatParameter
+        - Simpler state dict handling without communication
+        - No need for special prefetch or sync handling
+        """
         if isinstance(dist_model, FSDP):
             with FSDP.state_dict_type(
                 dist_model,
@@ -775,12 +805,44 @@ class FullCheckpointer(Checkpointer):
             gc.collect()
             torch.cuda.empty_cache()
             barrier()
+
+        elif isinstance(dist_model, FSDPModule):  # FSDP2
+            with torch.no_grad():
+                # Load sharded state dict - no communication needed in FSDP2
+                state_dict_to_load = load_state_dict(
+                    load_path, "model.pt", local_cache=local_cache, map_location="cpu"
+                )
+                
+                # Get FSDP state
+                state = dist_model._get_fsdp_state()
+                
+                # Ensure parameters are initialized on the correct device
+                device = state.mesh.device_type if state.mesh else "cuda"
+                dist_model.to_empty(device=device)
+                
+                # Load state dict - DTensor handles sharding automatically
+                dist_model.load_state_dict(state_dict_to_load, strict=True)
+
+                # Load optimizer state if requested
+                if load_optimizer_state and optim is not None:
+                    optim_state = load_state_dict(
+                        load_path, "optim.pt", local_cache=local_cache, map_location="cpu"
+                    )
+                    # FSDP2 optimizer state is already sharded, no special handling needed
+                    optim.load_state_dict(optim_state)
+
+            # Clean up memory
+            gc.collect()
+            torch.cuda.empty_cache()
+            barrier()
+
         else:
+            print(f"Type of dist_model: {type(dist_model)}")
             raise NotImplementedError(
-                "`FullCheckpointer.restore_checkpoint` only supported for FSDP and DDP distributed strategies!"
+                "`FullCheckpointer.restore_checkpoint` only supported for FSDP1, FSDP2, and DDP distributed strategies!"
             )
 
-        # Load other state.
+        # Load trainer state
         try:
             trainer_state = load_state_dict(load_path, "train.pt", local_cache=local_cache)
         except FileNotFoundError:
@@ -1926,13 +1988,13 @@ class OlmoCoreCheckpointer(Checkpointer):
                 (checkpoint_dir / "train").mkdir(exist_ok=True, parents=True)
 
             wait_for(
-                lambda: (checkpoint_dir / "model").exists(), "Waiting for checkpoint model directory", timeout=10.0
+                lambda: (checkpoint_dir / "model").exists(), "Waiting for checkpoint model directory", timeout=20.0
             )
             wait_for(
-                lambda: (checkpoint_dir / "optim").exists(), "Waiting for checkpoint optim directory", timeout=10.0
+                lambda: (checkpoint_dir / "optim").exists(), "Waiting for checkpoint optim directory", timeout=20.0
             )
             wait_for(
-                lambda: (checkpoint_dir / "train").exists(), "Waiting for checkpoint train directory", timeout=10.0
+                lambda: (checkpoint_dir / "train").exists(), "Waiting for checkpoint train directory", timeout=20.0
             )
 
             local_files_created = save_model_and_optim_state(checkpoint_dir, dist_model, optim)

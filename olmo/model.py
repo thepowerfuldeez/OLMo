@@ -49,6 +49,10 @@ from .exceptions import OLMoConfigurationError
 from .initialization import init_normal
 from .torch_util import ensure_finite_, get_cumulative_document_lengths
 
+from liger_kernel.transformers.rms_norm import LigerRMSNorm
+from liger_kernel.transformers.swiglu import LigerSwiGLUMLP
+from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
+
 if sys.version_info.minor > 8:
     from collections.abc import MutableMapping
 elif sys.version_info.minor == 8:
@@ -168,7 +172,10 @@ class LayerNormBase(nn.Module):
         elif config.layer_norm_type == LayerNormType.low_precision:
             return LayerNorm(config, size=size, low_precision=True, **kwargs)
         elif config.layer_norm_type == LayerNormType.rms:
-            return RMSLayerNorm(config, size=size, **kwargs)
+            if config.use_liger:
+                return LigerRMSNorm(hidden_size=size)
+            else:
+                return RMSLayerNorm(config, size=size, **kwargs)
         else:
             raise NotImplementedError(f"Unknown LayerNorm type: '{config.layer_norm_type}'")
 
@@ -359,7 +366,18 @@ class ReLU(nn.ReLU):
 
 
 class SwiGLU(Activation):
+    def __init__(self, config: ModelConfig):
+        super().__init__(config)
+        if config.use_liger:
+            self.liger_mlp = LigerSwiGLUMLP(
+                hidden_size=config.d_model,
+                intermediate_size=config.mlp_hidden_size or config.mlp_ratio * config.d_model,
+                bias=config.include_bias
+            )
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.config.use_liger:
+            return self.liger_mlp(x)
         x, gate = x.chunk(2, dim=-1)
         return F.silu(gate) * x
 
@@ -1445,12 +1463,27 @@ class OLMo(nn.Module):
 
         # Get logits.
         # shape: (batch_size, seq_len or 1, vocab_size)
-        if self.config.weight_tying:
-            logits = F.linear(x, self.transformer.wte.weight, None)  # type: ignore
+        if self.config.use_liger and self.training:
+            # Use fused linear cross entropy during training
+            if self.config.weight_tying:
+                logits = LigerFusedLinearCrossEntropyLoss()(
+                    self.transformer.wte.weight,  # type: ignore
+                    x,
+                    None  # Labels will be handled by loss function
+                )
+            else:
+                logits = LigerFusedLinearCrossEntropyLoss()(
+                    self.transformer.ff_out.weight,  # type: ignore
+                    x,
+                    None  # Labels will be handled by loss function
+                )
         else:
-            logits = self.transformer.ff_out(x)  # type: ignore
-        if self.config.scale_logits:
-            logits.mul_(1 / math.sqrt(self.config.d_model))
+            if self.config.weight_tying:
+                logits = F.linear(x, self.transformer.wte.weight, None)  # type: ignore
+            else:
+                logits = self.transformer.ff_out(x)  # type: ignore
+            if self.config.scale_logits:
+                logits.mul_(1 / math.sqrt(self.config.d_model))
 
         return OLMoOutput(
             logits=logits,
