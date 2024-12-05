@@ -294,11 +294,6 @@ class ModelConfig(BaseConfig):
     of blocks together with a single FSDP wrapper during training.
     """
 
-    use_liger: bool = False
-    """
-    If ``True``, use Liger optimized kernels.
-    """
-
     alibi: bool = False
     """
     If ``True``, use ALiBi embeddings. Mutually exclusive with ``rope``.
@@ -503,7 +498,6 @@ class ModelConfig(BaseConfig):
 class OptimizerType(StrEnum):
     lionw = "lionw"
     adamw = "adamw"
-    mars = "mars"
 
 
 @dataclass
@@ -723,11 +717,6 @@ class DistributedStrategy(StrEnum):
     fsdp = "fsdp"
     """
     Wrap OLMo in torch.distributed.fsdp.FullyShardedDataParallel to train across ranks.
-    """
-
-    fsdp2 = "fsdp2"
-    """
-    Use new FSDP2 API with fully_shard() to shard the model across ranks.
     """
 
 
@@ -1075,11 +1064,6 @@ class TrainConfig(BaseConfig):
     reset_trainer_state: bool = False
     """
     When this is set we don't restore the trainer state from a checkpoint.
-    """
-
-    reset_scheduler_state: bool = False
-    """
-    When this is set we don't restore the scheduler state from a checkpoint.
     """
 
     sharded_checkpointer: ShardedCheckpointerType = ShardedCheckpointerType.torch_legacy

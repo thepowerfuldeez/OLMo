@@ -1,0 +1,276 @@
+run_name: 1128-OLMo2-125M
+seed: 42
+dry_run: false
+
+wandb:
+  name: ${run_name}
+  entity: thepowerfuldeez
+  project: olmo-tiny
+
+model:
+  d_model: 1024
+  n_heads: 8
+  n_layers: 10
+  mlp_hidden_size: 4096
+
+  use_liger: false
+  weight_tying: true
+  alibi: false
+  rope: true
+  rope_theta: 500000
+  flash_attention: true
+  attention_dropout: 0.0
+  include_bias: false
+  block_type: sequential
+  layer_norm_type: rms
+  layer_norm_with_affine: true
+  layer_norm_eps: 1e-6
+  bias_for_layer_norm: false
+  attention_layer_norm: true
+  attention_layer_norm_with_affine: true
+  norm_after: true
+  activation_type: swiglu
+  residual_dropout: 0.0
+  embedding_dropout: 0.0
+  max_sequence_length: 4096
+  vocab_size: 32064
+  embedding_size: 32064
+  eos_token_id: 9
+  pad_token_id: 9
+  init_device: meta
+  init_fn: mitchell
+  # change for large runs
+  # init_fn: normal
+  # init_std: 0.02
+  # init_cutoff_factor: 3
+softmax_auxiliary_loss: false
+auxiliary_loss_multiplier: 1e-5
+fused_loss: false
+
+
+compile: null
+  # fullgraph: false
+  # mode: max-autotune
+
+optimizer:
+  name: adamw
+  # learning_rate: 4.0e-4
+  learning_rate: 7.0e-5
+  weight_decay: 0.1
+  eps: 1e-8
+  decay_norm_and_bias: true
+  decay_embeddings: false
+  betas:
+  - 0.9
+  - 0.95
+  metrics_log_interval: 10
+
+reset_scheduler_state: true
+scheduler:
+  name: cosine_with_warmup
+  t_warmup: 5000
+  alpha_f: 0.1
+
+tokenizer:
+  identifier: thepowerfuldeez/nGPT-tokenizer
+  truncate_direction: right
+
+# save_folder: ${path.choose:${oc.env:SCRATCH_DIR,no_exist}/checkpoints,/results}/${oc.env:SLURM_JOB_ID,${run_name}}
+save_folder: /mnt/harddrive/checkpoints/olmo-tiny/${run_name}
+save_overwrite: true
+# Sharded checkpoints (best for restarts)
+save_interval: 2000
+save_num_checkpoints_to_keep: 9
+# Unsharded checkpoints (for final storage)
+save_interval_unsharded: 10000
+save_num_unsharded_checkpoints_to_keep: -1
+
+# load_path: /mnt/harddrive/checkpoints/olmo-tiny/1116-OLMo-125M-first-run/latest/
+# load_path: /mnt/harddrive/checkpoints/olmo-tiny/1116-OLMo-125M-first-run/step120000/
+load_path: null
+
+max_duration: 50e6T
+global_train_batch_size: 16
+device_train_microbatch_size: 8
+
+precision: amp_bf16
+
+fsdp:
+  wrapping_strategy: by_block_and_size
+  precision: mixed
+
+max_grad_norm: 1.0
+max_grad_norm_ratio: null
+
+speed_monitor:
+  window_size: 1
+
+gen1_gc_interval: 1
+
+eval_interval: 2000
+eval_subset_num_batches: -1
+device_eval_batch_size: ${device_train_microbatch_size}
+evaluators:
+  # lump all the small datasets together (we still get separate metrics).
+  # - label: v3-small-ppl-validation
+  #   data:
+  #     num_workers: 0
+  #     drop_last: true
+  #     datasets:
+  #       v3-small-c4_en-validation:
+  #         - /mnt/harddrive/datasets/text/eval-data/perplexity/v3_small_gptneox20b/c4_en/val/part-0-00000.npy
+  #       v3-small-dolma_books-validation:
+  #         - /mnt/harddrive/datasets/text/eval-data/perplexity/v3_small_gptneox20b/dolma_books/val/part-0-00000.npy
+  #       v3-small-dolma_common-crawl-validation:
+  #         - /mnt/harddrive/datasets/text/eval-data/perplexity/v3_small_gptneox20b/dolma_common-crawl/val/part-0-00000.npy
+  #       v3-small-dolma_pes2o-validation:
+  #         - /mnt/harddrive/datasets/text/eval-data/perplexity/v3_small_gptneox20b/dolma_pes2o/val/part-0-00000.npy
+  #       v3-small-dolma_reddit-validation:
+  #         - /mnt/harddrive/datasets/text/eval-data/perplexity/v3_small_gptneox20b/dolma_reddit/val/part-0-00000.npy
+  #       v3-small-dolma_stack-validation:
+  #         - /mnt/harddrive/datasets/text/eval-data/perplexity/v3_small_gptneox20b/dolma_stack/val/part-0-00000.npy
+  #       v3-small-dolma_wiki-validation:
+  #         - /mnt/harddrive/datasets/text/eval-data/perplexity/v3_small_gptneox20b/dolma_wiki/val/part-0-00000.npy
+  #       v3-small-ice-validation:
+  #         - /mnt/harddrive/datasets/text/eval-data/perplexity/v3_small_gptneox20b/ice/val/part-0-00000.npy
+  #       v3-small-m2d2_s2orc-validation:
+  #         - /mnt/harddrive/datasets/text/eval-data/perplexity/v3_small_gptneox20b/m2d2_s2orc/val/part-0-00000.npy
+  #       v3-small-pile-validation:
+  #         - /mnt/harddrive/datasets/text/eval-data/perplexity/v3_small_gptneox20b/pile/val/part-0-00000.npy
+  #       v3-small-wikitext_103-validation:
+  #         - /mnt/harddrive/datasets/text/eval-data/perplexity/v3_small_gptneox20b/wikitext_103/val/part-0-00000.npy
+
+  # - label: v2-small-ppl-validation
+  #   data:
+  #     num_workers: 0
+  #     drop_last: true
+  #     datasets:
+  #       v2-small-4chan-validation:
+  #       - /mnt/harddrive/datasets/text/eval-data/perplexity/v2_small_gptneox20b/4chan/val.npy
+  #       v2-small-c4_100_domains-validation:
+  #       - /mnt/harddrive/datasets/text/eval-data/perplexity/v2_small_gptneox20b/c4_100_domains/val.npy
+  #       v2-small-c4_en-validation:
+  #       - /mnt/harddrive/datasets/text/eval-data/perplexity/v2_small_gptneox20b/c4_en/val.npy
+  #       v2-small-gab-validation:
+  #       - /mnt/harddrive/datasets/text/eval-data/perplexity/v2_small_gptneox20b/gab/val.npy
+  #       v2-small-ice-validation:
+  #       - /mnt/harddrive/datasets/text/eval-data/perplexity/v2_small_gptneox20b/ice/val.npy
+  #       v2-small-m2d2_s2orc-validation:
+  #       - /mnt/harddrive/datasets/text/eval-data/perplexity/v2_small_gptneox20b/m2d2_s2orc/val.npy
+  #       v2-small-m2d2_wiki-validation:
+  #       - /mnt/harddrive/datasets/text/eval-data/perplexity/v2_small_gptneox20b/m2d2_wiki/val.npy
+  #       v2-small-manosphere-validation:
+  #       - /mnt/harddrive/datasets/text/eval-data/perplexity/v2_small_gptneox20b/manosphere/val.npy
+  #       v2-small-mc4_en-validation:
+  #       - /mnt/harddrive/datasets/text/eval-data/perplexity/v2_small_gptneox20b/mc4_en/val.npy
+  #       v2-small-pile-validation:
+  #       - /mnt/harddrive/datasets/text/eval-data/perplexity/v2_small_gptneox20b/pile/val.npy
+  #       v2-small-ptb-validation:
+  #       - /mnt/harddrive/datasets/text/eval-data/perplexity/v2_small_gptneox20b/ptb/val.npy
+  #       v2-small-twitterAEE-validation:
+  #       - /mnt/harddrive/datasets/text/eval-data/perplexity/v2_small_gptneox20b/twitterAEE/val.npy
+  #       v2-small-wikitext_103-validation:
+  #       - /mnt/harddrive/datasets/text/eval-data/perplexity/v2_small_gptneox20b/wikitext_103/val.npy
+
+  # - label: piqa
+  #   type: downstream
+  #   subset_num_batches: 25
+  #   device_eval_batch_size: 1
+
+  - label: hellaswag
+    type: downstream
+    subset_num_batches: 500
+    device_eval_batch_size: 1
+
+  - label: winogrande
+    type: downstream
+    subset_num_batches: 500
+    device_eval_batch_size: 1
+
+  - label: openbook_qa
+    type: downstream
+    subset_num_batches: 500
+    device_eval_batch_size: 1
+  
+  - label: boolq
+    type: downstream
+    subset_num_batches: 500
+    device_eval_batch_size: 1
+
+  - label: sciq
+    type: downstream
+    subset_num_batches: 500
+    device_eval_batch_size: 1
+
+  - label: arc_easy
+    type: downstream
+    subset_num_batches: 500
+    device_eval_batch_size: 1
+
+  - label: mmlu_stem
+    type: downstream
+    subset_num_batches: 500
+    device_eval_batch_size: 1
+
+  - label: mmlu_humanities
+    type: downstream
+    subset_num_batches: 500
+    device_eval_batch_size: 1
+
+  - label: mmlu_social_sciences
+    type: downstream
+    subset_num_batches: 500
+    device_eval_batch_size: 1
+
+  - label: mmlu_stem_mc_5shot
+    type: downstream
+    subset_num_batches: 500
+    device_eval_batch_size: 1
+
+  - label: mmlu_humanities_mc_5shot
+    type: downstream
+    subset_num_batches: 500
+    device_eval_batch_size: 1
+
+  - label: mmlu_social_sciences_mc_5shot
+    type: downstream
+    subset_num_batches: 500
+    device_eval_batch_size: 1
+
+  - label: mmlu_other_mc_5shot
+    type: downstream
+    subset_num_batches: 500
+    device_eval_batch_size: 1
+
+  # - label: arc_challenge  # requires implemention of the pmi_dc matrix
+  #   type: downstream
+
+  # - label: copa
+  #   type: downstream
+
+  # - label: rte
+  #   type: downstream
+
+  # - label: commitment_bank
+  #   type: downstream
+
+  # - label: mrpc
+  #   type: downstream
+
+  # - label: sst2
+  #   type: downstream
+
+data:
+  pad_direction: right
+  num_workers: 16
+  drop_last: true
+  pin_memory: true
+  prefetch_factor: 8
+  persistent_workers: true
+  # memmap_dtype: uint32
+  timeout: 0
+  instance_filter:
+    repetition_max_period: 13
+    repetition_min_period: 1
+    repetition_max_count: 32
+  paths: ${path.glob:/mnt/harddrive/datasets/fineweb_edu_filtered_tokenized/*.npy}

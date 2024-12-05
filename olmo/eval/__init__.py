@@ -106,9 +106,9 @@ def build_evaluator(
         raise ValueError(f"Unexpected evaluator type '{eval_config.type}'")
 
 
-def build_evaluators(cfg: TrainConfig, tokenizer: Tokenizer, device: torch.device) -> List[Evaluator]:
+def build_evaluators(cfg: TrainConfig, device: torch.device) -> List[Evaluator]:
     evaluators = []
-    # tokenizer = Tokenizer.from_train_config(cfg)
+    tokenizer = Tokenizer.from_train_config(cfg)
     for eval_cfg in cfg.evaluators:
         evaluators.append(build_evaluator(cfg, eval_cfg, tokenizer, device))
     return evaluators
